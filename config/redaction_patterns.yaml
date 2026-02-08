@@ -1,0 +1,21 @@
+patterns:
+  - regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    replacement: "[EMAIL]"
+
+  - regex: '\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'
+    replacement: "[PHONE]"
+
+  - regex: '\b\d{3}-\d{2}-\d{4}\b'
+    replacement: "[SSN]"
+
+  - regex: '\b(?:\d{4}[- ]?){3}\d{4}\b'
+    replacement: "[CARD]"
+
+  - regex: 'sk-[a-zA-Z0-9]{20,}'
+    replacement: "[API_KEY]"
+
+  - regex: 'ghp_[a-zA-Z0-9]{36,}'
+    replacement: "[GITHUB_TOKEN]"
+
+  - regex: 'Bearer\s+[a-zA-Z0-9._-]+'
+    replacement: "Bearer [REDACTED]"

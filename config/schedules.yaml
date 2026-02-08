@@ -1,0 +1,5 @@
+jobs:
+  self_reflect:
+    description: "Periodic self-reflection and summary"
+    cron: "0 9 * * *"  # Daily at 9:00 UTC
+    enabled: true

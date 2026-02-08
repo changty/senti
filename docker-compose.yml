@@ -1,0 +1,25 @@
+services:
+  senti:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    # Use host network so Senti can reach the user's local Ollama instance
+    network_mode: host
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock  # DooD: Docker-out-of-Docker
+    restart: unless-stopped
+
+networks:
+  default:
+    name: senti_default
+  senti_search_net:
+    name: senti_search_net
+    driver: bridge
+  senti_gdrive_net:
+    name: senti_gdrive_net
+    driver: bridge
+  senti_email_net:
+    name: senti_email_net
+    driver: bridge

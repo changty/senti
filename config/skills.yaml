@@ -1,0 +1,44 @@
+skills:
+  facts:
+    description: "Save, retrieve, and manage persistent facts"
+    module: "senti.skills.builtin.fact_skill"
+    class_name: "FactSkill"
+    sandboxed: false
+    requires_approval: false
+
+  datetime:
+    description: "Get current date and time"
+    module: "senti.skills.builtin.datetime_skill"
+    class_name: "DateTimeSkill"
+    sandboxed: false
+    requires_approval: false
+
+  search:
+    description: "Web search and page fetching"
+    module: "senti.skills.builtin.search_skill"
+    class_name: "SearchSkill"
+    sandboxed: true
+    sandbox_image: "senti-search:latest"
+    network: "senti_search_net"
+    requires_approval: false
+    # Tools provided:
+    #   web_search  - Search the web via Brave Search API
+    #   web_fetch   - Fetch and extract text from a URL (SSRF-protected)
+
+  gdrive:
+    description: "Google Drive file operations"
+    module: "senti.skills.builtin.gdrive_skill"
+    class_name: "GDriveSkill"
+    sandboxed: true
+    sandbox_image: "senti-gdrive:latest"
+    network: "senti_gdrive_net"
+    requires_approval: true
+
+  email:
+    description: "Email reading and drafting"
+    module: "senti.skills.builtin.email_skill"
+    class_name: "EmailSkill"
+    sandboxed: true
+    sandbox_image: "senti-email:latest"
+    network: "senti_email_net"
+    requires_approval: true

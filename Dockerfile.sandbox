@@ -1,0 +1,10 @@
+# Base image for sandbox containers that need Python
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# No elevated privileges
+USER nobody
+
+# Default entrypoint runs run.py from stdin→stdout
+CMD ["python", "run.py"]
