@@ -43,3 +43,57 @@ class AuditLogger:
     async def log_kill(self, user_id: int) -> None:
         """Log a kill switch activation."""
         await self.log_event(user_id, "kill_switch", "activated")
+
+    async def log_llm_usage(
+        self,
+        user_id: int | None,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+    ) -> None:
+        """Record LLM token usage."""
+        await self._db.conn.execute(
+            "INSERT INTO llm_usage (user_id, model, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?)",
+            (user_id, model, prompt_tokens, completion_tokens, total_tokens),
+        )
+        await self._db.conn.commit()
+
+    async def get_usage_today(self, user_id: int) -> dict[str, int]:
+        """Get today's token usage for a user."""
+        cursor = await self._db.conn.execute(
+            """
+            SELECT COALESCE(SUM(prompt_tokens), 0) AS prompt,
+                   COALESCE(SUM(completion_tokens), 0) AS completion,
+                   COALESCE(SUM(total_tokens), 0) AS total
+            FROM llm_usage
+            WHERE user_id = ? AND DATE(created_at) = DATE('now')
+            """,
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return {"prompt": row["prompt"], "completion": row["completion"], "total": row["total"]}
+
+    async def get_usage_by_model(self, user_id: int) -> list[dict[str, Any]]:
+        """Get today's token usage broken down by model."""
+        cursor = await self._db.conn.execute(
+            """
+            SELECT model, COALESCE(SUM(total_tokens), 0) AS total
+            FROM llm_usage
+            WHERE user_id = ? AND DATE(created_at) = DATE('now')
+            GROUP BY model
+            ORDER BY total DESC
+            """,
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [{"model": row["model"], "total": row["total"]} for row in rows]
+
+    async def get_usage_alltime(self, user_id: int) -> int:
+        """Get all-time total tokens for a user."""
+        cursor = await self._db.conn.execute(
+            "SELECT COALESCE(SUM(total_tokens), 0) AS total FROM llm_usage WHERE user_id = ?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return row["total"]

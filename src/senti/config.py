@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     max_tool_rounds: int = 10
     max_result_chars: int = 4000
     conversation_window_size: int = 20
+    llm_max_retries: int = 3
 
     @field_validator("allowed_telegram_user_ids", mode="before")
     @classmethod

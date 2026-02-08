@@ -70,6 +70,7 @@ class Orchestrator:
         user_id: int,
         text: str,
         *,
+        images: list[dict[str, str]] | None = None,
         update: Update | None = None,
     ) -> str:
         """Full message processing pipeline."""
@@ -83,10 +84,22 @@ class Orchestrator:
             history = await self._conversation.get_history(user_id)
 
         # 3. Build messages
+        if images:
+            content: list[dict[str, Any]] = []
+            for img in images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{img['mime_type']};base64,{img['base64']}"},
+                })
+            content.append({"type": "text", "text": text})
+            user_message: dict[str, Any] = {"role": "user", "content": content}
+        else:
+            user_message = {"role": "user", "content": text}
+
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
             *history,
-            {"role": "user", "content": text},
+            user_message,
         ]
 
         # 4. Get tool definitions
@@ -94,6 +107,14 @@ class Orchestrator:
 
         # 5. LLM completion
         response = await self._llm.complete(messages, tools=tools)
+
+        # Track cumulative token usage across all LLM rounds
+        total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "model": ""}
+        usage = response.get("usage", {})
+        total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+        total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+        total_usage["total_tokens"] += usage.get("total_tokens", 0)
+        total_usage["model"] = usage.get("model", "")
 
         # 6. Tool-call loop
         rounds = 0
@@ -142,6 +163,10 @@ class Orchestrator:
 
             # Re-call LLM with tool results
             response = await self._llm.complete(messages, tools=tools)
+            usage = response.get("usage", {})
+            total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+            total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+            total_usage["total_tokens"] += usage.get("total_tokens", 0)
 
         # 7. Extract final text
         final_text = response.get("content", "")
@@ -157,7 +182,23 @@ class Orchestrator:
             await self._conversation.add_message(user_id, "user", text)
             await self._conversation.add_message(user_id, "assistant", final_text)
 
+        # 10. Log token usage
+        if self._audit and total_usage["total_tokens"] > 0:
+            await self._audit.log_llm_usage(
+                user_id,
+                total_usage["model"],
+                total_usage["prompt_tokens"],
+                total_usage["completion_tokens"],
+                total_usage["total_tokens"],
+            )
+
         return final_text
+
+    async def undo(self, user_id: int) -> int:
+        """Remove the last conversation turn. Returns rows deleted."""
+        if self._conversation:
+            return await self._conversation.undo(user_id)
+        return 0
 
     async def reset_conversation(self, user_id: int) -> None:
         if self._conversation:
@@ -204,6 +245,24 @@ class Orchestrator:
     def resume_scheduler(self) -> None:
         if self._scheduler:
             self._scheduler.resume()
+
+    async def get_usage_stats(self, user_id: int) -> str:
+        """Return formatted token usage stats for a user."""
+        if not self._audit:
+            return "Usage tracking not available."
+        today = await self._audit.get_usage_today(user_id)
+        by_model = await self._audit.get_usage_by_model(user_id)
+        alltime = await self._audit.get_usage_alltime(user_id)
+
+        lines = [
+            f"Today: {today['total']:,} tokens ({today['prompt']:,} prompt / {today['completion']:,} completion)",
+        ]
+        if by_model:
+            lines.append("\nBy model:")
+            for entry in by_model:
+                lines.append(f"  {entry['model']}: {entry['total']:,} tokens")
+        lines.append(f"\nAll time: {alltime:,} tokens")
+        return "\n".join(lines)
 
     async def kill(self, user_id: int) -> None:
         """Emergency stop: clear memory, pause jobs, kill containers."""

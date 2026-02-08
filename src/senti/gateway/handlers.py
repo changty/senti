@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,8 @@ def make_handlers(orchestrator: Orchestrator):
             "/facts - List stored facts\n"
             "/status - System status\n"
             "/jobs - List scheduled jobs\n"
+            "/undo - Remove last conversation turn\n"
+            "/usage - Token usage stats\n"
             "/pause - Pause scheduler\n"
             "/resume - Resume scheduler\n"
             "/kill - Emergency stop"
@@ -45,6 +48,14 @@ def make_handlers(orchestrator: Orchestrator):
         user_id = update.effective_user.id
         await orchestrator.reset_conversation(user_id)
         await update.message.reply_text("Conversation history cleared.")
+
+    async def cmd_undo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user_id = update.effective_user.id
+        deleted = await orchestrator.undo(user_id)
+        if deleted:
+            await update.message.reply_text("Last turn removed.")
+        else:
+            await update.message.reply_text("Nothing to undo.")
 
     async def cmd_facts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_id = update.effective_user.id
@@ -93,6 +104,11 @@ def make_handlers(orchestrator: Orchestrator):
         except LLMError as exc:
             await update.message.reply_text(str(exc))
 
+    async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user_id = update.effective_user.id
+        stats = await orchestrator.get_usage_stats(user_id)
+        await update.message.reply_text(stats)
+
     async def cmd_kill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_id = update.effective_user.id
         await orchestrator.kill(user_id)
@@ -112,16 +128,39 @@ def make_handlers(orchestrator: Orchestrator):
             logger.exception("Error processing message")
             await update.message.reply_text("Sorry, something went wrong. Please try again.")
 
+    async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user_id = update.effective_user.id
+        caption = update.message.caption or "Describe this image."
+
+        logger.info("Photo from user %d, caption: %s", user_id, caption[:80])
+        try:
+            photo = update.message.photo[-1]  # largest size
+            file = await photo.get_file()
+            data = await file.download_as_bytearray()
+            encoded = base64.b64encode(bytes(data)).decode("ascii")
+            image_dict = {"mime_type": "image/jpeg", "base64": encoded}
+
+            response = await orchestrator.process_message(
+                user_id, caption, images=[image_dict], update=update,
+            )
+            await update.message.reply_text(format_response(response))
+        except Exception:
+            logger.exception("Error processing photo")
+            await update.message.reply_text("Sorry, something went wrong. Please try again.")
+
     return {
         "start": cmd_start,
         "help": cmd_help,
         "model": cmd_model,
         "reset": cmd_reset,
+        "undo": cmd_undo,
         "facts": cmd_facts,
         "status": cmd_status,
+        "usage": cmd_usage,
         "jobs": cmd_jobs,
         "pause": cmd_pause,
         "resume": cmd_resume,
         "kill": cmd_kill,
         "message": handle_message,
+        "photo": handle_photo,
     }

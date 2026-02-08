@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -125,25 +126,82 @@ class LLMClient:
 
         return kwargs
 
+    @staticmethod
+    def _is_retryable(exc: Exception) -> bool:
+        """Check if an exception is transient and worth retrying."""
+        exc_str = str(exc).lower()
+        # Non-retryable: auth and invalid model errors
+        for code in ("401", "403", "404"):
+            if code in exc_str:
+                return False
+        if "authentication" in exc_str or "unauthorized" in exc_str:
+            return False
+        # Retryable: timeouts, connection errors, rate limits, server errors
+        for indicator in ("timeout", "connection", "429", "500", "502", "503",
+                          "rate limit", "overloaded", "service unavailable"):
+            if indicator in exc_str:
+                return True
+        # Retryable by exception type
+        if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+            return True
+        return False
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Send a chat completion request, returning the response message dict."""
+        """Send a chat completion request with retry, returning the response message dict."""
         kwargs = self._build_kwargs(messages, tools)
+        max_retries = self._settings.llm_max_retries
+        last_exc: Exception | None = None
 
-        try:
-            response = await litellm.acompletion(**kwargs)
-        except Exception as exc:
-            logger.error("LLM call failed (%s): %s", self._active.name if self._active else "?", exc)
-            raise LLMError(f"LLM completion failed: {exc}") from exc
+        for attempt in range(max_retries):
+            try:
+                response = await litellm.acompletion(**kwargs)
+            except Exception as exc:
+                last_exc = exc
+                model_name = self._active.name if self._active else "?"
+                if attempt < max_retries - 1 and self._is_retryable(exc):
+                    delay = min(2 ** attempt, 30)
+                    logger.warning(
+                        "LLM call failed (%s), attempt %d/%d, retrying in %ds: %s",
+                        model_name, attempt + 1, max_retries, delay, exc,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error("LLM call failed (%s): %s", model_name, exc)
+                raise LLMError(f"LLM completion failed: {exc}") from exc
+            else:
+                break
+        else:
+            # All retries exhausted
+            model_name = self._active.name if self._active else "?"
+            logger.error("LLM call failed after %d attempts (%s): %s", max_retries, model_name, last_exc)
+            raise LLMError(f"LLM completion failed after {max_retries} attempts: {last_exc}") from last_exc
 
         message = response.choices[0].message
         result: dict[str, Any] = {
             "role": "assistant",
             "content": message.content or "",
         }
+
+        # Extract usage data if available
+        usage = getattr(response, "usage", None)
+        if usage:
+            result["usage"] = {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+                "model": self._active.name if self._active else "unknown",
+            }
+        else:
+            result["usage"] = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "model": self._active.name if self._active else "unknown",
+            }
 
         # Native tool_calls
         if hasattr(message, "tool_calls") and message.tool_calls:

@@ -30,12 +30,17 @@ def build_bot(
     h = make_handlers(orchestrator)
 
     # Register command handlers (filtered to allowed users)
-    for cmd_name in ["start", "help", "model", "reset", "facts", "status", "jobs", "pause", "resume", "kill"]:
+    for cmd_name in ["start", "help", "model", "reset", "undo", "facts", "status", "usage", "jobs", "pause", "resume", "kill"]:
         app.add_handler(CommandHandler(cmd_name, h[cmd_name], filters=user_filter))
 
     # Register text message handler
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, h["message"])
+    )
+
+    # Register photo handler
+    app.add_handler(
+        MessageHandler(filters.PHOTO & user_filter, h["photo"])
     )
 
     # Register HITL callback handler

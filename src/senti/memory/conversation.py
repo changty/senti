@@ -56,6 +56,29 @@ class ConversationMemory:
         rows = rows[-self._window:]
         return [{"role": row["role"], "content": row["content"]} for row in rows]
 
+    async def undo(self, user_id: int, turns: int = 1) -> int:
+        """Remove the last N turns (each turn = 1 user + 1 assistant message).
+
+        Returns the number of rows deleted.
+        """
+        limit = turns * 2
+        cursor = await self._db.conn.execute(
+            """
+            DELETE FROM conversations
+            WHERE id IN (
+                SELECT id FROM conversations
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            )
+            """,
+            (user_id, limit),
+        )
+        await self._db.conn.commit()
+        deleted = cursor.rowcount
+        logger.info("Undo: removed %d messages for user %d", deleted, user_id)
+        return deleted
+
     async def clear(self, user_id: int) -> None:
         """Delete all conversation history for a user."""
         await self._db.conn.execute(
