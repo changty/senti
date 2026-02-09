@@ -54,6 +54,20 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 
 CREATE INDEX IF NOT EXISTS idx_usage_user ON llm_usage(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_time ON llm_usage(created_at);
+
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    description TEXT NOT NULL,
+    cron_expression TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_user ON scheduled_jobs(user_id);
 """
 
 

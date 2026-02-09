@@ -19,6 +19,8 @@ def main() -> None:
             except (KeyboardInterrupt, SystemExit):
                 pass
             finally:
+                if "db" in app.bot_data:
+                    await app.bot_data["db"].close()
                 await app.updater.stop()
                 await app.stop()
 

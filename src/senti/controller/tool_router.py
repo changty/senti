@@ -12,9 +12,12 @@ if TYPE_CHECKING:
     from telegram import Update
 
     from senti.config import Settings
+    from senti.controller.orchestrator import Orchestrator
     from senti.gateway.hitl import HITLManager
     from senti.memory.fact_store import FactStore
     from senti.sandbox.executor import SandboxExecutor
+    from senti.scheduler.engine import SchedulerEngine
+    from senti.scheduler.job_store import JobStore
     from senti.skills.registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
@@ -31,12 +34,17 @@ class ToolRouter:
         sandbox: SandboxExecutor | None = None,
         hitl: HITLManager | None = None,
         settings: Settings | None = None,
+        job_store: JobStore | None = None,
+        scheduler: SchedulerEngine | None = None,
     ) -> None:
         self._registry = registry
         self._fact_store = fact_store
         self._sandbox = sandbox
         self._hitl = hitl
         self._settings = settings
+        self._job_store = job_store
+        self._scheduler = scheduler
+        self._orchestrator: Orchestrator | None = None
 
     async def execute(
         self,
@@ -79,11 +87,20 @@ class ToolRouter:
                 )
                 return result
             else:
+                # Derive chat_id from Telegram update if available
+                chat_id = 0
+                if update and hasattr(update, "effective_chat") and update.effective_chat:
+                    chat_id = update.effective_chat.id
+
                 return await skill.execute(
                     function_name,
                     arguments,
                     user_id=user_id,
+                    chat_id=chat_id,
                     fact_store=self._fact_store,
+                    job_store=self._job_store,
+                    scheduler=self._scheduler,
+                    orchestrator=self._orchestrator,
                     update=update,
                 )
         except (ApprovalDeniedError, ApprovalTimeoutError):

@@ -42,3 +42,10 @@ skills:
     sandbox_image: "senti-email:latest"
     network: "senti_email_net"
     requires_approval: true
+
+  scheduler:
+    description: "Create, list, and delete scheduled jobs"
+    module: "senti.skills.builtin.scheduler_skill"
+    class_name: "SchedulerSkill"
+    sandboxed: false
+    requires_approval: false

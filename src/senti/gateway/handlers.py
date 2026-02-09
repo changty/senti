@@ -7,10 +7,11 @@ import logging
 from typing import TYPE_CHECKING
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from senti.exceptions import LLMError
-from senti.gateway.formatters import format_response
+from senti.gateway.formatters import MAX_MESSAGE_LENGTH, format_response
 
 if TYPE_CHECKING:
     from senti.controller.orchestrator import Orchestrator
@@ -71,8 +72,16 @@ def make_handlers(orchestrator: Orchestrator):
         await update.message.reply_text(status)
 
     async def cmd_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        info = orchestrator.get_jobs_info()
-        await update.message.reply_text(info or "No scheduled jobs.")
+        user_id = update.effective_user.id
+        jobs = await orchestrator.list_jobs(user_id)
+        if not jobs:
+            await update.message.reply_text("No scheduled jobs.")
+            return
+        lines = [
+            f"- #{j['id']}: {j['description']} (cron: {j['cron_expression']}, tz: {j['timezone']})"
+            for j in jobs
+        ]
+        await update.message.reply_text("Scheduled jobs:\n" + "\n".join(lines))
 
     async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         orchestrator.pause_scheduler()
@@ -114,6 +123,15 @@ def make_handlers(orchestrator: Orchestrator):
         await orchestrator.kill(user_id)
         await update.message.reply_text("Kill switch activated. Memory cleared, jobs paused.")
 
+    async def _reply_html(message, text: str) -> None:
+        """Send formatted HTML, falling back to plain text on parse errors."""
+        html = format_response(text)
+        try:
+            await message.reply_text(html, parse_mode="HTML")
+        except Exception:
+            logger.debug("HTML send failed, falling back to plain text")
+            await message.reply_text(text[:MAX_MESSAGE_LENGTH])
+
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_id = update.effective_user.id
         text = update.message.text or ""
@@ -122,8 +140,9 @@ def make_handlers(orchestrator: Orchestrator):
 
         logger.info("Message from user %d: %s", user_id, text[:80])
         try:
+            await update.message.chat.send_action(ChatAction.TYPING)
             response = await orchestrator.process_message(user_id, text, update=update)
-            await update.message.reply_text(format_response(response))
+            await _reply_html(update.message, response)
         except Exception:
             logger.exception("Error processing message")
             await update.message.reply_text("Sorry, something went wrong. Please try again.")
@@ -134,6 +153,7 @@ def make_handlers(orchestrator: Orchestrator):
 
         logger.info("Photo from user %d, caption: %s", user_id, caption[:80])
         try:
+            await update.message.chat.send_action(ChatAction.TYPING)
             photo = update.message.photo[-1]  # largest size
             file = await photo.get_file()
             data = await file.download_as_bytearray()
@@ -143,7 +163,7 @@ def make_handlers(orchestrator: Orchestrator):
             response = await orchestrator.process_message(
                 user_id, caption, images=[image_dict], update=update,
             )
-            await update.message.reply_text(format_response(response))
+            await _reply_html(update.message, response)
         except Exception:
             logger.exception("Error processing photo")
             await update.message.reply_text("Sorry, something went wrong. Please try again.")

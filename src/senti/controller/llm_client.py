@@ -224,36 +224,64 @@ class LLMClient:
             if parsed:
                 result["tool_calls"] = parsed
                 result["content"] = ""
+            else:
+                # Strip tool_call markers so users don't see raw artifacts
+                result["content"] = re.sub(r"tool_call\s*\n?", "", result["content"]).strip()
 
         return result
 
     @staticmethod
-    def _try_parse_tool_calls(content: str) -> list[dict[str, Any]] | None:
+    def _normalize_tool_call(data: dict[str, Any], idx: int = 0) -> dict[str, Any] | None:
+        """Normalize a parsed JSON dict into a tool call structure, or None."""
+        if "name" not in data:
+            return None
+        args = data.get("arguments") or data.get("parameters")
+        if args is None:
+            args = {}
+        return {
+            "id": f"call_parsed_{idx}",
+            "type": "function",
+            "function": {
+                "name": data["name"],
+                "arguments": json.dumps(args) if isinstance(args, dict) else str(args),
+            },
+        }
+
+    @classmethod
+    def _try_parse_tool_calls(cls, content: str) -> list[dict[str, Any]] | None:
         """Attempt to extract tool calls from JSON in the response content."""
+        # Regex patterns for common LLM tool-call output formats
         patterns = [
             re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL),
             re.compile(r"```\s*(\{.*?\})\s*```", re.DOTALL),
+            re.compile(r"tool_call\s*\n?\s*(\{.*\})", re.DOTALL),
         ]
         for pattern in patterns:
             match = pattern.search(content)
             if match:
                 try:
                     data = json.loads(match.group(1))
-                    if "name" in data and "arguments" in data:
-                        return [
-                            {
-                                "id": "call_parsed_0",
-                                "type": "function",
-                                "function": {
-                                    "name": data["name"],
-                                    "arguments": (
-                                        json.dumps(data["arguments"])
-                                        if isinstance(data["arguments"], dict)
-                                        else str(data["arguments"])
-                                    ),
-                                },
-                            }
-                        ]
+                    result = cls._normalize_tool_call(data)
+                    if result:
+                        return [result]
                 except (json.JSONDecodeError, KeyError):
                     continue
+
+        # raw_decode fallback: scan for JSON objects containing "name"
+        decoder = json.JSONDecoder()
+        idx = 0
+        while idx < len(content):
+            pos = content.find("{", idx)
+            if pos == -1:
+                break
+            try:
+                data, end = decoder.raw_decode(content, pos)
+                if isinstance(data, dict):
+                    result = cls._normalize_tool_call(data)
+                    if result:
+                        return [result]
+                idx = pos + end
+            except json.JSONDecodeError:
+                idx = pos + 1
+
         return None

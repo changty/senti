@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from senti.memory.conversation import ConversationMemory
     from senti.memory.fact_store import FactStore
     from senti.scheduler.engine import SchedulerEngine
+    from senti.scheduler.job_store import JobStore
     from senti.security.audit import AuditLogger
     from senti.skills.registry import SkillRegistry
 
@@ -40,6 +41,7 @@ class Orchestrator:
         token_guard: TokenGuard | None = None,
         audit: AuditLogger | None = None,
         scheduler: SchedulerEngine | None = None,
+        job_store: JobStore | None = None,
     ) -> None:
         self._settings = settings
         self._llm = llm
@@ -51,6 +53,7 @@ class Orchestrator:
         self._token_guard = token_guard
         self._audit = audit
         self._scheduler = scheduler
+        self._job_store = job_store
         self._system_prompt = self._load_system_prompt()
 
     def _load_system_prompt(self) -> str:
@@ -58,6 +61,29 @@ class Orchestrator:
         if path.exists():
             return path.read_text(encoding="utf-8").strip()
         return "You are Senti, a helpful AI assistant."
+
+    async def _build_system_prompt(self, user_id: int) -> str:
+        """Build system prompt with injected facts and scheduled jobs."""
+        parts = [self._system_prompt]
+
+        # Inject saved facts
+        if self._fact_store:
+            facts = await self._fact_store.list_facts(user_id)
+            if facts:
+                lines = [f"- {k}: {v}" for k, v in facts.items()]
+                parts.append("\n## Known Facts About This User\n" + "\n".join(lines))
+
+        # Inject scheduled jobs
+        if self._job_store:
+            jobs = await self._job_store.list_for_user(user_id)
+            if jobs:
+                lines = [
+                    f"- #{j['id']}: {j['description']} (cron: {j['cron_expression']}, tz: {j['timezone']})"
+                    for j in jobs
+                ]
+                parts.append("\n## User's Scheduled Jobs\n" + "\n".join(lines))
+
+        return "\n".join(parts)
 
     def _get_tool_definitions(self) -> list[dict[str, Any]] | None:
         if self._registry is None:
@@ -97,7 +123,7 @@ class Orchestrator:
             user_message = {"role": "user", "content": text}
 
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self._system_prompt},
+            {"role": "system", "content": await self._build_system_prompt(user_id)},
             *history,
             user_message,
         ]
@@ -237,6 +263,12 @@ class Orchestrator:
         if self._scheduler:
             return self._scheduler.get_jobs_info()
         return "Scheduler not configured."
+
+    async def list_jobs(self, user_id: int) -> list[dict[str, Any]]:
+        """Return persisted scheduled jobs for a user."""
+        if self._job_store:
+            return await self._job_store.list_for_user(user_id)
+        return []
 
     def pause_scheduler(self) -> None:
         if self._scheduler:
