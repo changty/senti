@@ -48,6 +48,11 @@ def build_bot(
         MessageHandler(filters.PHOTO & user_filter, h["photo"])
     )
 
+    # Register document handler
+    app.add_handler(
+        MessageHandler(filters.Document.ALL & user_filter, h["document"])
+    )
+
     # Register HITL callback handler
     if hitl:
         app.add_handler(hitl.get_callback_handler())

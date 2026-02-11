@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from senti.config import Settings
@@ -88,6 +90,8 @@ class Orchestrator:
         self._audit = audit
         self._scheduler = scheduler
         self._job_store = job_store
+        self._current_upload_path: Path | None = None
+        self._current_upload_name: str | None = None
         self._system_prompt = self._load_system_prompt()
 
     def _load_system_prompt(self) -> str:
@@ -132,9 +136,39 @@ class Orchestrator:
         text: str,
         *,
         images: list[dict[str, str]] | None = None,
+        file: dict[str, Any] | None = None,
         update: Update | None = None,
     ) -> str:
         """Full message processing pipeline."""
+        try:
+            return await self._process_message_inner(
+                user_id, text, images=images, file=file, update=update,
+                _upload_path_out=lambda p: setattr(self, '_upload_path_ref', p),
+            )
+        finally:
+            # Cleanup temp upload file
+            up = getattr(self, '_upload_path_ref', None)
+            if up and up.exists():
+                try:
+                    up.unlink()
+                    logger.debug("Cleaned up upload file: %s", up)
+                except OSError:
+                    logger.warning("Failed to clean up upload file: %s", up)
+            self._upload_path_ref = None
+            self._current_upload_path = None
+            self._current_upload_name = None
+
+    async def _process_message_inner(
+        self,
+        user_id: int,
+        text: str,
+        *,
+        images: list[dict[str, str]] | None = None,
+        file: dict[str, Any] | None = None,
+        update: Update | None = None,
+        _upload_path_out=None,
+    ) -> str:
+        """Inner message processing pipeline."""
         # 0. Check session boundary (generate summary if idle too long)
         if self._memory_store:
             await self._check_session_boundary(user_id)
@@ -142,6 +176,37 @@ class Orchestrator:
         # 1. Redact user input
         if self._redactor:
             text = self._redactor.redact(text)
+
+        # 1.5. Handle file upload
+        if file:
+            file_data: bytes = file["data"]
+            file_name: str = file["file_name"]
+            file_size: int = file["size"]
+
+            if file_size <= self._settings.upload_inline_threshold_bytes:
+                # Small file: decode and inject inline
+                try:
+                    file_text = file_data.decode("utf-8")
+                except UnicodeDecodeError:
+                    file_text = file_data.decode("latin-1")
+                text = f"{text}\n\n[File: {file_name}]\n```\n{file_text}\n```"
+            else:
+                # Large file: save to disk and mount into sandbox
+                uploads_dir = self._settings.uploads_dir
+                uploads_dir.mkdir(parents=True, exist_ok=True)
+                safe_name = f"{user_id}_{int(time.time())}_{file_name}"
+                upload_path = (uploads_dir / safe_name).resolve()
+                upload_path.write_bytes(file_data)
+                logger.info("Saved upload: %s (%d bytes)", upload_path, len(file_data))
+                self._current_upload_path = upload_path
+                self._current_upload_name = file_name
+                if _upload_path_out:
+                    _upload_path_out(upload_path)
+                text = (
+                    f"{text}\n\n[The user uploaded '{file_name}' ({file_size:,} bytes). "
+                    f"It is available at /data/upload/{file_name}. "
+                    f"Use run_python with pandas to read and analyze it.]"
+                )
 
         # 2. Load conversation history
         history: list[dict[str, str]] = []

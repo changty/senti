@@ -103,11 +103,24 @@ class ToolRouter:
                     environment={},
                 )
             elif defn and defn.sandboxed and self._sandbox:
+                # Check if orchestrator has a file upload to inject
+                upload: tuple[str, bytes] | None = None
+                sandbox_mem = "128m"
+                if self._orchestrator and self._orchestrator._current_upload_path:
+                    up = self._orchestrator._current_upload_path
+                    name = self._orchestrator._current_upload_name
+                    if up.is_file() and name:
+                        upload = (name, up.read_bytes())
+                        sandbox_mem = "256m"
+                        logger.info("Upload for sandbox: %s (%d bytes)", name, len(upload[1]))
+
                 result = await self._sandbox.run(
                     image=defn.sandbox_image,
                     input_data={"function": function_name, "arguments": arguments},
                     network_mode=defn.network,
                     environment=self._sandbox_env(defn.name),
+                    upload_file=upload,
+                    mem_limit=sandbox_mem,
                 )
                 return result
             else:

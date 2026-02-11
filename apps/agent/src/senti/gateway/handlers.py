@@ -10,6 +10,7 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
+from senti.config import get_settings
 from senti.exceptions import LLMError
 from senti.gateway.formatters import MAX_MESSAGE_LENGTH, format_response
 
@@ -174,6 +175,56 @@ def make_handlers(orchestrator: Orchestrator):
             logger.exception("Error processing photo")
             await update.message.reply_text("Sorry, something went wrong. Please try again.")
 
+    async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user_id = update.effective_user.id
+        doc = update.message.document
+        file_name = doc.file_name or "unknown"
+        mime_type = doc.mime_type or ""
+        file_size = doc.file_size or 0
+
+        logger.info("Document from user %d: %s (%s, %d bytes)", user_id, file_name, mime_type, file_size)
+
+        settings = get_settings()
+
+        # Validate MIME type
+        allowed = any(mime_type.startswith(prefix) for prefix in settings.upload_allowed_mime_prefixes)
+        if not allowed:
+            await update.message.reply_text(
+                f"Unsupported file type: {mime_type}. "
+                f"I can process text files (CSV, JSON, TXT, XML, YAML)."
+            )
+            return
+
+        # Validate size
+        if file_size > settings.upload_max_file_size_bytes:
+            max_mb = settings.upload_max_file_size_bytes / (1024 * 1024)
+            await update.message.reply_text(
+                f"File too large ({file_size / (1024*1024):.1f} MB). Maximum is {max_mb:.0f} MB."
+            )
+            return
+
+        try:
+            await update.message.chat.send_action(ChatAction.TYPING)
+            tg_file = await doc.get_file()
+            data = await tg_file.download_as_bytearray()
+
+            caption = update.message.caption or f"I've uploaded a file: {file_name}. Please analyze it."
+
+            file_info = {
+                "file_name": file_name,
+                "mime_type": mime_type,
+                "size": file_size,
+                "data": bytes(data),
+            }
+
+            response = await orchestrator.process_message(
+                user_id, caption, file=file_info, update=update,
+            )
+            await _reply_html(update.message, response)
+        except Exception:
+            logger.exception("Error processing document")
+            await update.message.reply_text("Sorry, something went wrong processing your file. Please try again.")
+
     return {
         "start": cmd_start,
         "help": cmd_help,
@@ -190,4 +241,5 @@ def make_handlers(orchestrator: Orchestrator):
         "kill": cmd_kill,
         "message": handle_message,
         "photo": handle_photo,
+        "document": handle_document,
     }

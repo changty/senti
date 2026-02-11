@@ -28,6 +28,7 @@ class PythonSkill(BaseSkill):
                         "Execute Python code in a secure sandbox. "
                         "Has numpy and pandas available. "
                         "Use print() to produce output. "
+                        "When the user uploads a file, it's available at /data/upload/<filename>. "
                         "No network access. Max 10K chars of code, 8K chars of output."
                     ),
                     "parameters": {

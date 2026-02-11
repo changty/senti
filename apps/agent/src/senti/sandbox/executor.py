@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import tarfile
 from typing import Any
 
 import docker
@@ -38,10 +40,14 @@ class SandboxExecutor:
         timeout: int = DEFAULT_TIMEOUT,
         mem_limit: str = DEFAULT_MEM_LIMIT,
         environment: dict[str, str] | None = None,
+        upload_file: tuple[str, bytes] | None = None,
     ) -> str:
         """Run a skill in a sandboxed container and return the result string.
 
         The container receives JSON on stdin and must write JSON to stdout.
+        If upload_file is provided as (filename, data), the file is injected
+        into the container at /data/upload/<filename> via put_archive before
+        the container starts.
         """
         import asyncio
 
@@ -54,6 +60,7 @@ class SandboxExecutor:
             timeout,
             mem_limit,
             environment,
+            upload_file,
         )
 
     def _ensure_network(self, name: str) -> None:
@@ -67,6 +74,17 @@ class SandboxExecutor:
             logger.info("Created Docker network: %s", name)
         self._ensured_networks.add(name)
 
+    @staticmethod
+    def _make_tar(filename: str, data: bytes) -> bytes:
+        """Create an in-memory tar archive containing a single file."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            info = tarfile.TarInfo(name=filename)
+            info.size = len(data)
+            info.mode = 0o444
+            tar.addfile(info, io.BytesIO(data))
+        return buf.getvalue()
+
     def _run_sync(
         self,
         image: str,
@@ -75,6 +93,7 @@ class SandboxExecutor:
         timeout: int,
         mem_limit: str,
         environment: dict[str, str] | None,
+        upload_file: tuple[str, bytes] | None = None,
     ) -> str:
         """Synchronous container execution."""
         self._ensure_network(network_mode)
@@ -84,12 +103,17 @@ class SandboxExecutor:
         env = dict(environment or {})
         env["SENTI_INPUT"] = json.dumps(input_data)
 
+        # When uploading a file:
+        #  - read_only must be False so put_archive can write to the image layer
+        #  - Do NOT put /data/upload on tmpfs — tmpfs would shadow the put_archive write
+        has_upload = upload_file is not None
+
         try:
-            container = self._client.containers.run(
+            container = self._client.containers.create(
                 image=image,
                 detach=True,
                 network_mode=network_mode,
-                read_only=True,
+                read_only=not has_upload,
                 cap_drop=["ALL"],
                 security_opt=["no-new-privileges"],
                 mem_limit=mem_limit,
@@ -98,6 +122,15 @@ class SandboxExecutor:
                 tmpfs={"/tmp": "size=10m,noexec"},
                 environment=env,
             )
+
+            # Inject file into container's writable layer before starting
+            if upload_file:
+                filename, data = upload_file
+                tar_data = self._make_tar(filename, data)
+                container.put_archive("/data/upload", tar_data)
+                logger.info("Injected %s (%d bytes) into container /data/upload/", filename, len(data))
+
+            container.start()
 
             # Wait for completion
             result = container.wait(timeout=timeout)

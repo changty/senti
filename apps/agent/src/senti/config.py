@@ -36,7 +36,6 @@ PROJECT_ROOT = _find_project_root()
 CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
@@ -77,6 +76,15 @@ class Settings(BaseSettings):
     session_idle_timeout_minutes: int = 30
     memory_context_tokens: int = 1500
 
+    # File uploads
+    upload_max_file_size_bytes: int = 10 * 1024 * 1024      # 10 MB
+    upload_inline_threshold_bytes: int = 100 * 1024          # 100 KB
+    upload_allowed_mime_prefixes: list[str] = [
+        "text/", "application/json", "application/csv",
+        "application/xml", "application/x-yaml",
+    ]
+
+
     @field_validator("allowed_telegram_user_ids", mode="before")
     @classmethod
     def parse_user_ids(cls, v: str | list | int) -> list[int]:
@@ -115,6 +123,10 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return DATA_DIR / "senti.db"
+
+    @property
+    def uploads_dir(self) -> Path:
+        return DATA_DIR / "uploads"
 
     @property
     def log_dir(self) -> Path:
