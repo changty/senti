@@ -34,7 +34,7 @@ def make_handlers(orchestrator: Orchestrator):
             "/help - Show this help\n"
             "/model - List models or switch: /model <name>\n"
             "/reset - Clear conversation history\n"
-            "/facts - List stored facts\n"
+            "/memories - List stored memories\n"
             "/status - System status\n"
             "/jobs - List scheduled jobs\n"
             "/undo - Remove last conversation turn\n"
@@ -58,14 +58,20 @@ def make_handlers(orchestrator: Orchestrator):
         else:
             await update.message.reply_text("Nothing to undo.")
 
-    async def cmd_facts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_memories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_id = update.effective_user.id
-        facts = await orchestrator.list_facts(user_id)
-        if not facts:
-            await update.message.reply_text("No facts stored yet.")
+        memories = await orchestrator.list_memories(user_id)
+        if not memories:
+            await update.message.reply_text("No memories stored yet.")
             return
-        lines = [f"- {k}: {v}" for k, v in facts.items()]
-        await update.message.reply_text("Stored facts:\n" + "\n".join(lines))
+        lines = []
+        current_cat = None
+        for m in memories:
+            if m["category"] != current_cat:
+                current_cat = m["category"]
+                lines.append(f"\n[{current_cat}]")
+            lines.append(f"  #{m['id']}: {m['title']} (importance: {m['importance']})")
+        await update.message.reply_text("Stored memories:" + "\n".join(lines))
 
     async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         status = await orchestrator.get_status()
@@ -174,7 +180,8 @@ def make_handlers(orchestrator: Orchestrator):
         "model": cmd_model,
         "reset": cmd_reset,
         "undo": cmd_undo,
-        "facts": cmd_facts,
+        "memories": cmd_memories,
+        "facts": cmd_memories,
         "status": cmd_status,
         "usage": cmd_usage,
         "jobs": cmd_jobs,

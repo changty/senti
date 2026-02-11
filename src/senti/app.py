@@ -16,6 +16,7 @@ from senti.logging_config import setup_logging
 from senti.memory.conversation import ConversationMemory
 from senti.memory.database import Database
 from senti.memory.fact_store import FactStore
+from senti.memory.memory_store import MemoryStore
 from senti.sandbox.executor import SandboxExecutor
 from senti.scheduler.engine import SchedulerEngine
 from senti.scheduler.job_store import JobStore
@@ -40,6 +41,7 @@ async def create_app():
     # Memory
     conversation = ConversationMemory(db, window_size=settings.conversation_window_size)
     fact_store = FactStore(db)
+    memory_store = MemoryStore(db, settings.memories_dir)
 
     # Job store
     job_store = JobStore(db)
@@ -73,10 +75,13 @@ async def create_app():
     # Scheduler
     scheduler = SchedulerEngine()
 
+    # Migrate facts to memories (idempotent)
+    await memory_store.migrate_from_facts(fact_store)
+
     # Tool router (orchestrator back-linked below)
     tool_router = ToolRouter(
         registry,
-        fact_store=fact_store,
+        memory_store=memory_store,
         sandbox=sandbox,
         hitl=hitl,
         settings=settings,
@@ -89,7 +94,7 @@ async def create_app():
         settings=settings,
         llm=llm,
         conversation=conversation,
-        fact_store=fact_store,
+        memory_store=memory_store,
         registry=registry,
         tool_router=tool_router,
         redactor=redactor,

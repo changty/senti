@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     conversation_window_size: int = 20
     llm_max_retries: int = 3
 
+    # Memory
+    session_idle_timeout_minutes: int = 30
+    memory_context_tokens: int = 1500
+
     @field_validator("allowed_telegram_user_ids", mode="before")
     @classmethod
     def parse_user_ids(cls, v: str | list | int) -> list[int]:
@@ -103,6 +107,10 @@ class Settings(BaseSettings):
     @property
     def schedules_config_path(self) -> Path:
         return CONFIG_DIR / "schedules.yaml"
+
+    @property
+    def memories_dir(self) -> Path:
+        return DATA_DIR / "memories"
 
     @property
     def db_path(self) -> Path:

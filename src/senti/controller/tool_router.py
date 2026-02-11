@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from senti.config import Settings
     from senti.controller.orchestrator import Orchestrator
     from senti.gateway.hitl import HITLManager
-    from senti.memory.fact_store import FactStore
+    from senti.memory.memory_store import MemoryStore
     from senti.sandbox.executor import SandboxExecutor
     from senti.scheduler.engine import SchedulerEngine
     from senti.scheduler.job_store import JobStore
@@ -30,7 +30,7 @@ class ToolRouter:
         self,
         registry: SkillRegistry,
         *,
-        fact_store: FactStore | None = None,
+        memory_store: MemoryStore | None = None,
         sandbox: SandboxExecutor | None = None,
         hitl: HITLManager | None = None,
         settings: Settings | None = None,
@@ -38,7 +38,7 @@ class ToolRouter:
         scheduler: SchedulerEngine | None = None,
     ) -> None:
         self._registry = registry
-        self._fact_store = fact_store
+        self._memory_store = memory_store
         self._sandbox = sandbox
         self._hitl = hitl
         self._settings = settings
@@ -97,7 +97,7 @@ class ToolRouter:
                     arguments,
                     user_id=user_id,
                     chat_id=chat_id,
-                    fact_store=self._fact_store,
+                    memory_store=self._memory_store,
                     job_store=self._job_store,
                     scheduler=self._scheduler,
                     orchestrator=self._orchestrator,

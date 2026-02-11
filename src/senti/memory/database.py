@@ -55,6 +55,32 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 CREATE INDEX IF NOT EXISTS idx_usage_user ON llm_usage(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_time ON llm_usage(created_at);
 
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    category TEXT NOT NULL DEFAULT 'general',
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    importance INTEGER NOT NULL DEFAULT 5,
+    source TEXT NOT NULL DEFAULT 'manual',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    access_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category);
+CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(user_id, importance DESC);
+
+CREATE TABLE IF NOT EXISTS session_tracker (
+    user_id INTEGER PRIMARY KEY,
+    last_message_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    session_summarized INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS scheduled_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,

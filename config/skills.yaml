@@ -1,8 +1,8 @@
 skills:
-  facts:
-    description: "Save, retrieve, and manage persistent facts"
-    module: "senti.skills.builtin.fact_skill"
-    class_name: "FactSkill"
+  memory:
+    description: "Save, search, and manage persistent memories"
+    module: "senti.skills.builtin.memory_skill"
+    class_name: "MemorySkill"
     sandboxed: false
     requires_approval: false
 

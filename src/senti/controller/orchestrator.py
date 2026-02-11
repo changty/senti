@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 from senti.config import Settings
@@ -17,13 +19,45 @@ if TYPE_CHECKING:
     from senti.controller.token_guard import TokenGuard
     from senti.controller.tool_router import ToolRouter
     from senti.memory.conversation import ConversationMemory
-    from senti.memory.fact_store import FactStore
+    from senti.memory.memory_store import MemoryStore
     from senti.scheduler.engine import SchedulerEngine
     from senti.scheduler.job_store import JobStore
     from senti.security.audit import AuditLogger
     from senti.skills.registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
+
+EXTRACTION_PROMPT = """\
+You are a memory extraction assistant. Analyze the latest user/assistant exchange and decide what's worth remembering long-term about the user.
+
+Existing memory titles (avoid duplicates):
+{existing_titles}
+
+Latest exchange:
+User: {user_text}
+Assistant: {assistant_text}
+
+Return a JSON array of memories to save. Each object should have:
+- "title": short descriptive title
+- "content": the information to remember
+- "category": one of "preference", "fact", "people", "goal", "general"
+- "importance": 1-10 (how important is this to remember?)
+- "update_title": (optional) if this updates an existing memory, put the existing title here
+
+If nothing is worth remembering, return an empty array: []
+Return ONLY valid JSON, no other text."""
+
+SESSION_SUMMARY_PROMPT = """\
+Summarize this conversation session concisely. Focus on:
+- Key topics discussed
+- Decisions made
+- Tasks completed or requested
+- Any important context for future conversations
+
+Conversation:
+{conversation}
+
+Write a brief, factual summary (2-5 sentences)."""
 
 
 class Orchestrator:
@@ -34,7 +68,7 @@ class Orchestrator:
         settings: Settings,
         llm: LLMClient,
         conversation: ConversationMemory | None = None,
-        fact_store: FactStore | None = None,
+        memory_store: MemoryStore | None = None,
         registry: SkillRegistry | None = None,
         tool_router: ToolRouter | None = None,
         redactor: Redactor | None = None,
@@ -46,7 +80,7 @@ class Orchestrator:
         self._settings = settings
         self._llm = llm
         self._conversation = conversation
-        self._fact_store = fact_store
+        self._memory_store = memory_store
         self._registry = registry
         self._tool_router = tool_router
         self._redactor = redactor
@@ -63,15 +97,16 @@ class Orchestrator:
         return "You are Senti, a helpful AI assistant."
 
     async def _build_system_prompt(self, user_id: int) -> str:
-        """Build system prompt with injected facts and scheduled jobs."""
+        """Build system prompt with injected memories and scheduled jobs."""
         parts = [self._system_prompt]
 
-        # Inject saved facts
-        if self._fact_store:
-            facts = await self._fact_store.list_facts(user_id)
-            if facts:
-                lines = [f"- {k}: {v}" for k, v in facts.items()]
-                parts.append("\n## Known Facts About This User\n" + "\n".join(lines))
+        # Inject memories
+        if self._memory_store:
+            context = await self._memory_store.get_context_memories(
+                user_id, self._settings.memory_context_tokens
+            )
+            if context:
+                parts.append(context)
 
         # Inject scheduled jobs
         if self._job_store:
@@ -100,6 +135,10 @@ class Orchestrator:
         update: Update | None = None,
     ) -> str:
         """Full message processing pipeline."""
+        # 0. Check session boundary (generate summary if idle too long)
+        if self._memory_store:
+            await self._check_session_boundary(user_id)
+
         # 1. Redact user input
         if self._redactor:
             text = self._redactor.redact(text)
@@ -218,7 +257,147 @@ class Orchestrator:
                 total_usage["total_tokens"],
             )
 
+        # 11. Autonomous memory extraction (fire-and-forget)
+        if self._memory_store and len(text) >= 10:
+            asyncio.create_task(self._extract_memories(user_id, text, final_text))
+
+        # 12. Update session tracker
+        if self._memory_store:
+            await self._memory_store.update_session_tracker(user_id)
+
         return final_text
+
+    async def _extract_memories(self, user_id: int, user_text: str, assistant_text: str) -> None:
+        """Background task: extract memories from the latest exchange."""
+        try:
+            existing_titles = await self._memory_store.get_memory_titles(user_id)
+            titles_str = "\n".join(f"- {t}" for t in existing_titles) if existing_titles else "(none)"
+
+            prompt = EXTRACTION_PROMPT.format(
+                existing_titles=titles_str,
+                user_text=user_text,
+                assistant_text=assistant_text,
+            )
+
+            messages = [
+                {"role": "system", "content": "You extract structured memories from conversations. Return only valid JSON."},
+                {"role": "user", "content": prompt},
+            ]
+
+            response = await self._llm.complete(messages, tools=None)
+            raw = response.get("content", "").strip()
+
+            # Try to parse JSON from the response
+            # Handle cases where the LLM wraps JSON in markdown code blocks
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+            memories = json.loads(raw)
+            if not isinstance(memories, list):
+                return
+
+            for mem in memories:
+                if not isinstance(mem, dict):
+                    continue
+                title = mem.get("title", "").strip()
+                content = mem.get("content", "").strip()
+                if not title or not content:
+                    continue
+
+                # If update_title is specified, find and update the existing memory
+                update_title = mem.get("update_title", "").strip()
+                if update_title:
+                    from difflib import SequenceMatcher
+                    existing = await self._memory_store.list_memories(user_id)
+                    for ex in existing:
+                        ratio = SequenceMatcher(None, update_title.lower(), ex["title"].lower()).ratio()
+                        if ratio > 0.85:
+                            await self._memory_store.update_memory(
+                                ex["id"],
+                                content=content,
+                                title=title,
+                                importance=mem.get("importance", 5),
+                            )
+                            break
+                    continue
+
+                await self._memory_store.save_memory(
+                    user_id=user_id,
+                    title=title,
+                    content=content,
+                    category=mem.get("category", "general"),
+                    importance=mem.get("importance", 5),
+                    source="auto",
+                )
+
+        except Exception:
+            logger.debug("Memory extraction failed (non-critical)", exc_info=True)
+
+    async def _check_session_boundary(self, user_id: int) -> None:
+        """Check if session has been idle long enough to generate a summary."""
+        try:
+            session = await self._memory_store.get_session_info(user_id)
+            if not session:
+                return
+
+            # Check conditions: idle > timeout, enough messages, not already summarized
+            if session["session_summarized"] or session["message_count"] < 4:
+                return
+
+            last_msg = session["last_message_at"]
+            if isinstance(last_msg, str):
+                last_msg = datetime.fromisoformat(last_msg)
+            if last_msg.tzinfo is None:
+                last_msg = last_msg.replace(tzinfo=timezone.utc)
+
+            now = datetime.now(timezone.utc)
+            idle_minutes = (now - last_msg).total_seconds() / 60
+
+            if idle_minutes >= self._settings.session_idle_timeout_minutes:
+                await self._generate_session_summary(user_id)
+
+        except Exception:
+            logger.debug("Session boundary check failed (non-critical)", exc_info=True)
+
+    async def _generate_session_summary(self, user_id: int) -> None:
+        """Generate a summary of the recent conversation session."""
+        try:
+            if not self._conversation:
+                return
+
+            history = await self._conversation.get_history(user_id)
+            if not history:
+                return
+
+            # Format conversation for summarization
+            conv_text = "\n".join(
+                f"{msg['role'].title()}: {msg['content']}" for msg in history
+            )
+
+            prompt = SESSION_SUMMARY_PROMPT.format(conversation=conv_text)
+            messages = [
+                {"role": "system", "content": "You summarize conversations concisely."},
+                {"role": "user", "content": prompt},
+            ]
+
+            response = await self._llm.complete(messages, tools=None)
+            summary = response.get("content", "").strip()
+
+            if summary:
+                now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                await self._memory_store.save_memory(
+                    user_id=user_id,
+                    title=f"Session summary {now}",
+                    content=summary,
+                    category="session_summary",
+                    importance=4,
+                    source="auto",
+                )
+                await self._memory_store.mark_session_summarized(user_id)
+                logger.info("Generated session summary for user %d", user_id)
+
+        except Exception:
+            logger.debug("Session summary generation failed (non-critical)", exc_info=True)
 
     async def undo(self, user_id: int) -> int:
         """Remove the last conversation turn. Returns rows deleted."""
@@ -230,10 +409,10 @@ class Orchestrator:
         if self._conversation:
             await self._conversation.clear(user_id)
 
-    async def list_facts(self, user_id: int) -> dict[str, str]:
-        if self._fact_store:
-            return await self._fact_store.list_facts(user_id)
-        return {}
+    async def list_memories(self, user_id: int) -> list[dict[str, Any]]:
+        if self._memory_store:
+            return await self._memory_store.list_memories(user_id)
+        return []
 
     def switch_model(self, name: str) -> ModelConfig:
         """Switch the active LLM model. Raises LLMError if not found."""
@@ -300,8 +479,8 @@ class Orchestrator:
         """Emergency stop: clear memory, pause jobs, kill containers."""
         if self._conversation:
             await self._conversation.clear(user_id)
-        if self._fact_store:
-            await self._fact_store.clear(user_id)
+        if self._memory_store:
+            await self._memory_store.clear(user_id)
         if self._scheduler:
             self._scheduler.pause()
         logger.warning("Kill switch activated by user %d", user_id)
