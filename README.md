@@ -6,13 +6,14 @@ A modular, security-first AI agent system. Senti connects a Telegram interface t
 
 ```bash
 git clone <repo-url> senti && cd senti
+cd apps/agent
 pip install -e ".[dev]"
 cp .env.example .env          # edit with your values
 make sandbox-build             # build Docker sandbox images
-python -m senti                # start the bot
+python3 -m senti               # start the bot
 ```
 
-Open Telegram, find your bot, send `/start`. See [Setup](#setup) for full details.
+Open Telegram, find your bot, send `/start`. See [Agent Setup](#agent-setup) for full details.
 
 ## Architecture
 
@@ -40,6 +41,7 @@ User → Telegram → AllowedUserFilter → Orchestrator
    - Re-call LLM with results
 6. Redact outbound response, save to conversation memory
 7. Send response back to Telegram
+8. Audit event logged to SQLite
 
 ## Features
 
@@ -77,13 +79,12 @@ User → Telegram → AllowedUserFilter → Orchestrator
 
 **User-created tools** (via Skillsmith) are also sandboxed and require approval. After clicking "Approve & Trust", a user tool runs without future prompts.
 
-## Setup
+## Agent Setup
 
 ### 1. Install
 
 ```bash
-git clone <repo-url> senti
-cd senti
+cd apps/agent
 pip install -e ".[dev]"
 ```
 
@@ -144,14 +145,19 @@ This builds Docker images for web search, Google Drive, Gmail, and Python execut
 ### 5. Run
 
 ```bash
-python -m senti       # direct
-make run              # via Make
-make docker-up        # via Docker Compose
+python3 -m senti      # direct
+make run               # via Make
+```
+
+Or from the repo root:
+
+```bash
+docker compose up -d   # via Docker Compose
 ```
 
 ## Usage
 
-### Verify it's working
+### Verify the agent is working
 
 1. Open Telegram and find your bot.
 2. Send `/start` — you should get a greeting.
@@ -236,7 +242,7 @@ The `model` field uses [LiteLLM format](https://docs.litellm.ai/docs/providers).
 Senti uses Gmail OAuth2 with minimal scopes (`gmail.readonly` + `gmail.compose`). It can only read emails in a designated label and create drafts — it never sends email.
 
 1. Create OAuth credentials at [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials) (Desktop app type)
-2. Run `python scripts/gmail_oauth.py` to get a refresh token
+2. Run `python3 scripts/gmail_oauth.py` to get a refresh token
 3. Create a Gmail label matching `GMAIL_LABEL` (default: "Senti")
 4. Add credentials to `.env`
 
@@ -244,32 +250,35 @@ Senti uses Gmail OAuth2 with minimal scopes (`gmail.readonly` + `gmail.compose`)
 
 | File | Purpose |
 |------|---------|
-| `config/personality.md` | System prompt — personality, behavior, tool usage instructions |
-| `config/models.yaml` | LLM model definitions for runtime switching |
-| `config/skills.yaml` | Skill registry — modules, sandbox settings, approval flags |
-| `config/redaction_patterns.yaml` | Regex patterns for scrubbing sensitive data |
-| `config/schedules.yaml` | Cron-based scheduled jobs |
+| `apps/agent/config/personality.md` | System prompt — personality, behavior, tool usage instructions |
+| `apps/agent/config/models.yaml` | LLM model definitions for runtime switching |
+| `apps/agent/config/skills.yaml` | Skill registry — modules, sandbox settings, approval flags |
+| `apps/agent/config/redaction_patterns.yaml` | Regex patterns for scrubbing sensitive data |
+| `apps/agent/config/schedules.yaml` | Cron-based scheduled jobs |
 
 ## Project Structure
 
 ```
 senti/
-├── config/              # Personality, skills, models, redaction, schedules
-├── src/senti/
-│   ├── gateway/         # Telegram bot, handlers, filters, HITL approval
-│   ├── controller/      # Orchestrator, LLM client, tool router, redaction
-│   ├── memory/          # SQLite database, conversation buffer, memory store
-│   ├── sandbox/         # Docker container executor
-│   ├── skills/          # Base class, registry, user skill store, built-in skills
-│   ├── scheduler/       # APScheduler engine, job store, job definitions
-│   └── security/        # Content sanitizer, audit logging
-├── sandbox_images/      # Dockerfiles for sandboxed skill containers
-│   ├── search/          # Web search + fetch
-│   ├── gdrive/          # Google Drive operations
-│   ├── email_proxy/     # Gmail operations
-│   └── python_runner/   # Python code execution + user skill runtime
-├── tests/
-└── data/                # Runtime: senti.db, logs/, memories/ (gitignored)
+├── apps/
+│   └── agent/                        # Python Telegram bot
+│       ├── config/                   # Personality, skills, models, redaction, schedules
+│       ├── src/senti/
+│       │   ├── gateway/              # Telegram bot, handlers, filters, HITL approval
+│       │   ├── controller/           # Orchestrator, LLM client, tool router, redaction
+│       │   ├── memory/               # SQLite database, conversation buffer, memory store
+│       │   ├── sandbox/              # Docker container executor
+│       │   ├── skills/               # Base class, registry, user skill store, built-in skills
+│       │   ├── scheduler/            # APScheduler engine, job store, job definitions
+│       │   └── security/             # Content sanitizer, audit logging
+│       ├── sandbox_images/           # Dockerfiles for sandboxed skill containers
+│       ├── tests/
+│       ├── data/                     # Runtime: senti.db, logs/, memories/ (gitignored)
+│       ├── pyproject.toml
+│       └── Makefile
+│
+├── docker-compose.yml
+└── README.md
 ```
 
 ## Security
@@ -292,6 +301,7 @@ senti/
 ## Development
 
 ```bash
+cd apps/agent
 make dev              # install with dev dependencies
 make test             # run tests
 make lint             # ruff check
@@ -301,18 +311,21 @@ make clean            # remove runtime data
 
 ### Adding a built-in skill
 
-1. Create `src/senti/skills/builtin/my_skill.py` extending `BaseSkill`
+1. Create `apps/agent/src/senti/skills/builtin/my_skill.py` extending `BaseSkill`
 2. Implement `name`, `get_tool_definitions()`, and `execute()`
-3. Add an entry to `config/skills.yaml`
-4. If sandboxed, create `sandbox_images/my_skill/run.py` + `Dockerfile`
+3. Add an entry to `apps/agent/config/skills.yaml`
+4. If sandboxed, create `apps/agent/sandbox_images/my_skill/run.py` + `Dockerfile`
 
 ### Docker Compose
 
 Ollama must already be running on the host.
 
 ```bash
-make docker-build && make sandbox-build
-make docker-up        # start
-make docker-down      # stop
-docker compose logs -f senti  # view logs
+cd apps/agent
+make sandbox-build
+
+# from repo root
+docker compose build
+docker compose up -d
+docker compose logs -f senti
 ```

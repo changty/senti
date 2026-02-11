@@ -1,13 +1,13 @@
 services:
   senti:
     build:
-      context: .
+      context: ./apps/agent
       dockerfile: Dockerfile
-    env_file: .env
+    env_file: ./apps/agent/.env
     # Use host network so Senti can reach the user's local Ollama instance
     network_mode: host
     volumes:
-      - ./data:/app/data
+      - ./apps/agent/data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock  # DooD: Docker-out-of-Docker
     restart: unless-stopped
 
