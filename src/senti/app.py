@@ -23,6 +23,7 @@ from senti.scheduler.job_store import JobStore
 from senti.scheduler.jobs import register_jobs, reload_user_jobs, set_bot
 from senti.security.audit import AuditLogger
 from senti.skills.registry import SkillRegistry
+from senti.skills.user_skill_store import UserSkillStore
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +50,16 @@ async def create_app():
     # LLM
     llm = LLMClient(settings)
 
+    # User skill store
+    user_skill_store = UserSkillStore(db)
+
     # Skills
     registry = SkillRegistry(settings)
     registry.discover()
+
+    # Load persisted user skills
+    persisted_skills = await user_skill_store.list_all_enabled()
+    registry.load_user_skills(persisted_skills)
 
     # Redaction
     redactor = Redactor(settings)
@@ -87,6 +95,7 @@ async def create_app():
         settings=settings,
         job_store=job_store,
         scheduler=scheduler,
+        user_skill_store=user_skill_store,
     )
 
     # Orchestrator

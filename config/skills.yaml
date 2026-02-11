@@ -49,3 +49,21 @@ skills:
     class_name: "SchedulerSkill"
     sandboxed: false
     requires_approval: false
+
+  python_runner:
+    description: "Execute Python code in a secure sandbox"
+    module: "senti.skills.builtin.python_skill"
+    class_name: "PythonSkill"
+    sandboxed: true
+    sandbox_image: "senti-python:latest"
+    network: "none"
+    requires_approval: true
+
+  skillsmith:
+    description: "Create, list, and manage reusable user-defined skills"
+    module: "senti.skills.builtin.skillsmith_skill"
+    class_name: "SkillsmithSkill"
+    sandboxed: false
+    requires_approval: false
+    requires_approval_functions:
+      - create_skill

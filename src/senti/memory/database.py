@@ -94,6 +94,20 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_user ON scheduled_jobs(user_id);
+
+CREATE TABLE IF NOT EXISTS user_skills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    parameters_json TEXT NOT NULL DEFAULT '{}',
+    code TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    trusted INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_skills_user ON user_skills(user_id);
 """
 
 

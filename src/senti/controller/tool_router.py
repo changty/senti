@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from senti.scheduler.engine import SchedulerEngine
     from senti.scheduler.job_store import JobStore
     from senti.skills.registry import SkillRegistry
+    from senti.skills.user_skill_store import UserSkillStore
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class ToolRouter:
         settings: Settings | None = None,
         job_store: JobStore | None = None,
         scheduler: SchedulerEngine | None = None,
+        user_skill_store: UserSkillStore | None = None,
     ) -> None:
         self._registry = registry
         self._memory_store = memory_store
@@ -44,6 +46,7 @@ class ToolRouter:
         self._settings = settings
         self._job_store = job_store
         self._scheduler = scheduler
+        self._user_skill_store = user_skill_store
         self._orchestrator: Orchestrator | None = None
 
     async def execute(
@@ -62,23 +65,44 @@ class ToolRouter:
         defn = self._registry.get_definition(function_name)
 
         # HITL approval gate
-        if defn and defn.requires_approval and self._hitl and update:
-            try:
-                approved = await self._hitl.request_approval(
-                    update=update,
-                    tool_name=function_name,
-                    arguments=arguments,
-                )
-                if not approved:
-                    raise ApprovalDeniedError(f"User denied {function_name}")
-            except ApprovalTimeoutError:
-                return f"Approval for {function_name} timed out."
-            except ApprovalDeniedError:
-                return f"User denied execution of {function_name}."
+        if defn and self._hitl and update:
+            needs_approval = self._needs_approval(defn, function_name)
+            if needs_approval:
+                is_user_skill = defn.user_created
+                try:
+                    result = await self._hitl.request_approval(
+                        update=update,
+                        tool_name=function_name,
+                        arguments=arguments,
+                        is_user_skill=is_user_skill,
+                    )
+                    if result == "deny":
+                        raise ApprovalDeniedError(f"User denied {function_name}")
+                    if result == "trust" and is_user_skill:
+                        await self._trust_skill(defn.name, user_id)
+                except ApprovalTimeoutError:
+                    return f"Approval for {function_name} timed out."
+                except ApprovalDeniedError:
+                    return f"User denied execution of {function_name}."
 
         # Route: sandboxed vs in-process
         try:
-            if defn and defn.sandboxed and self._sandbox:
+            if defn and defn.user_created and self._sandbox:
+                # User skill: dispatch through python sandbox
+                input_data = {
+                    "function": "run_user_skill",
+                    "arguments": {
+                        "code": defn.user_skill_code,
+                        "arguments": arguments,
+                    },
+                }
+                return await self._sandbox.run(
+                    image="senti-python:latest",
+                    input_data=input_data,
+                    network_mode="none",
+                    environment={},
+                )
+            elif defn and defn.sandboxed and self._sandbox:
                 result = await self._sandbox.run(
                     image=defn.sandbox_image,
                     input_data={"function": function_name, "arguments": arguments},
@@ -101,6 +125,8 @@ class ToolRouter:
                     job_store=self._job_store,
                     scheduler=self._scheduler,
                     orchestrator=self._orchestrator,
+                    user_skill_store=self._user_skill_store,
+                    registry=self._registry,
                     update=update,
                 )
         except (ApprovalDeniedError, ApprovalTimeoutError):
@@ -108,6 +134,25 @@ class ToolRouter:
         except Exception as exc:
             logger.exception("Tool execution failed: %s", function_name)
             raise ToolError(f"Tool {function_name} failed: {exc}") from exc
+
+    def _needs_approval(self, defn, function_name: str) -> bool:
+        """Determine if a tool call needs HITL approval."""
+        # Trusted user skills skip approval
+        if defn.user_created and defn.trusted:
+            return False
+        # Per-function approval list
+        if defn.requires_approval_functions and function_name in defn.requires_approval_functions:
+            return True
+        # Blanket requires_approval flag
+        if defn.requires_approval:
+            return True
+        return False
+
+    async def _trust_skill(self, name: str, user_id: int) -> None:
+        """Mark a user skill as trusted in both DB and registry."""
+        if self._user_skill_store:
+            await self._user_skill_store.set_trusted(name, user_id, True)
+        self._registry.set_user_skill_trusted(name, True)
 
     def _sandbox_env(self, skill_name: str) -> dict[str, str]:
         """Return environment variables a sandboxed skill needs (secrets only)."""

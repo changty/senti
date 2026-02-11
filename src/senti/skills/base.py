@@ -20,6 +20,10 @@ class SkillDefinition:
     requires_approval: bool = False
     network: str = "none"  # "none" or an allowlist network name
     parameters: dict[str, Any] = field(default_factory=dict)
+    user_created: bool = False
+    user_skill_code: str = ""
+    trusted: bool = False
+    requires_approval_functions: list[str] = field(default_factory=list)
 
 
 class BaseSkill(ABC):

@@ -22,6 +22,7 @@ sandbox-build:
 	docker build -t senti-search:latest sandbox_images/search/
 	docker build -t senti-gdrive:latest sandbox_images/gdrive/
 	docker build -t senti-email:latest sandbox_images/email_proxy/
+	docker build -t senti-python:latest sandbox_images/python_runner/
 
 lint:
 	ruff check src/ tests/

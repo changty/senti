@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 from typing import Any
 
@@ -12,6 +13,46 @@ from senti.config import Settings
 from senti.skills.base import BaseSkill, SkillDefinition
 
 logger = logging.getLogger(__name__)
+
+
+class UserSkillProxy(BaseSkill):
+    """Lightweight proxy for a user-created skill.
+
+    Provides tool definitions to the LLM. Actual execution is routed
+    through the sandbox by ToolRouter.
+    """
+
+    def __init__(self, skill_data: dict[str, Any]) -> None:
+        self._data = skill_data
+        self._name = skill_data["name"]
+        self._description = skill_data["description"]
+        try:
+            self._parameters = json.loads(skill_data.get("parameters_json", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            self._parameters = {}
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def get_tool_definitions(self) -> list[dict[str, Any]]:
+        params = self._parameters or {
+            "type": "object",
+            "properties": {},
+        }
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": self._name,
+                    "description": self._description,
+                    "parameters": params,
+                },
+            },
+        ]
+
+    async def execute(self, function_name: str, arguments: dict[str, Any], **kwargs: Any) -> str:
+        return "User skill execution requires the sandbox container. Please ensure Docker is available."
 
 
 class SkillRegistry:
@@ -49,6 +90,7 @@ class SkillRegistry:
                 requires_approval=cfg.get("requires_approval", False),
                 network=cfg.get("network", "none"),
                 parameters=cfg.get("parameters", {}),
+                requires_approval_functions=cfg.get("requires_approval_functions", []),
             )
             self._definitions[name] = defn
 
@@ -87,3 +129,46 @@ class SkillRegistry:
         for skill in self._skills.values():
             result.extend(skill.get_tool_definitions())
         return result
+
+    def register_user_skill(self, skill_data: dict[str, Any]) -> None:
+        """Dynamically register a user-created skill."""
+        name = skill_data["name"]
+        proxy = UserSkillProxy(skill_data)
+        defn = SkillDefinition(
+            name=name,
+            description=skill_data["description"],
+            module="",
+            class_name="UserSkillProxy",
+            sandboxed=True,
+            sandbox_image="senti-python:latest",
+            requires_approval=True,
+            network="none",
+            user_created=True,
+            user_skill_code=skill_data["code"],
+            trusted=bool(skill_data.get("trusted", 0)),
+        )
+        self._skills[name] = proxy
+        self._definitions[name] = defn
+        self._function_map[name] = name
+        logger.info("Registered user skill: %s", name)
+
+    def unregister_user_skill(self, name: str) -> None:
+        """Remove a user-created skill from all registries."""
+        self._skills.pop(name, None)
+        self._definitions.pop(name, None)
+        self._function_map.pop(name, None)
+        logger.info("Unregistered user skill: %s", name)
+
+    def load_user_skills(self, skills: list[dict[str, Any]]) -> None:
+        """Bulk-load persisted user skills at startup."""
+        for skill_data in skills:
+            self.register_user_skill(skill_data)
+        if skills:
+            logger.info("Loaded %d user skills from DB", len(skills))
+
+    def set_user_skill_trusted(self, name: str, trusted: bool) -> None:
+        """Update the in-memory trusted flag for a user skill."""
+        defn = self._definitions.get(name)
+        if defn and defn.user_created:
+            defn.trusted = trusted
+            logger.info("User skill %s trusted=%s", name, trusted)

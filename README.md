@@ -1,16 +1,27 @@
 # Senti (Sentinel-Agent)
 
-A modular, security-first AI agent system. Senti connects a Telegram interface to LLMs (local via Ollama, or cloud providers like OpenAI, Gemini, Anthropic), with tool execution sandboxed in Docker containers and human-in-the-loop approval for high-stakes actions.
+A modular, security-first AI agent system. Senti connects a Telegram interface to LLMs (local via Ollama, or cloud providers like OpenAI, Gemini, Anthropic), with tool execution sandboxed in Docker containers and human-in-the-loop approval for sensitive actions.
+
+## Quick Start
+
+```bash
+git clone <repo-url> senti && cd senti
+pip install -e ".[dev]"
+cp .env.example .env          # edit with your values
+make sandbox-build             # build Docker sandbox images
+python -m senti                # start the bot
+```
+
+Open Telegram, find your bot, send `/start`. See [Setup](#setup) for full details.
 
 ## Architecture
 
 ```
 User → Telegram → AllowedUserFilter → Orchestrator
                                          ├── LLM (multi-provider via LiteLLM)
-                                         │    Ollama / OpenAI / Gemini / Anthropic
-                                         ├── Memory (SQLite)
-                                         ├── In-process skills (facts, datetime)
-                                         └── Sandboxed skills (search, gdrive, email)
+                                         ├── Memory (SQLite + markdown files)
+                                         ├── In-process skills (memory, datetime, scheduler, skillsmith)
+                                         └── Sandboxed skills (search, gdrive, email, python)
                                               └── Docker containers (read-only, no caps, nobody user)
 ```
 
@@ -18,9 +29,9 @@ User → Telegram → AllowedUserFilter → Orchestrator
 
 ### Message Flow
 
-1. User sends a Telegram message
+1. User sends a Telegram message (text or photo)
 2. `AllowedUserFilter` checks the user ID whitelist
-3. Orchestrator redacts inbound text, loads conversation history
+3. Orchestrator redacts inbound text, loads conversation history + relevant memories
 4. LLM generates a response (optionally with tool calls)
 5. Tool-call loop:
    - Check if the tool requires approval → HITL inline keyboard
@@ -34,38 +45,41 @@ User → Telegram → AllowedUserFilter → Orchestrator
 
 - **Access control** — Telegram user ID whitelist
 - **Conversation memory** — sliding window buffer (configurable, default 20 messages) persisted to SQLite
-- **Fact storage** — persistent key-value memory across conversations
+- **Rich memory system** — categorized memories (preference, fact, people, goal, general) with importance scoring, keyword search, and automatic context injection
+- **Image understanding** — send photos to Senti and it will describe and reason about them
+- **Python execution** — run arbitrary Python code in a sandboxed Docker container (numpy, pandas available)
+- **Custom tools** — create, list, and delete reusable user-defined tools that persist across conversations
 - **Tool system** — config-driven skill registry loaded from `config/skills.yaml`
 - **Sandbox execution** — Docker containers with `read_only`, `cap_drop=ALL`, `no-new-privileges`, `mem_limit`, `user=nobody`
-- **HITL approval** — inline keyboard Approve/Deny with 120s timeout for high-stakes tools
+- **HITL approval** — inline keyboard Approve/Deny (+ Approve & Trust for user-created tools) with 120s timeout
 - **Redaction** — secrets scrubbed at 3 points (inbound, tool results, outbound) using regex patterns + literal `.env` values
 - **Content sanitizer** — HTML→Markdown, strips scripts/iframes/hidden content
 - **Token guard** — max tool rounds and result truncation to prevent runaway loops
+- **Usage tracking** — per-user token usage stats via `/usage`
 - **Audit logging** — all tool calls and approval decisions logged to SQLite
-- **Scheduled jobs** — APScheduler-based autonomous loop (e.g. daily self-reflection)
+- **Scheduled jobs** — APScheduler-based autonomous loop (e.g. daily self-reflection) + user-created cron jobs
 - **Multi-model support** — switch between Ollama, OpenAI, Gemini, and Anthropic models at runtime via `/model`
+- **Undo** — `/undo` removes the last conversation turn
 - **Kill switch** — `/kill` clears memory, pauses jobs
 
-### Built-in Skills
+### Skills
 
 | Skill | Tools | Sandboxed | Approval |
 |-------|-------|-----------|----------|
-| Facts | `save_fact`, `get_fact`, `list_facts`, `delete_fact` | No | No |
+| Memory | `save_memory`, `search_memories`, `list_memories`, `update_memory`, `delete_memory` | No | No |
 | DateTime | `get_current_datetime` | No | No |
-| Web Search | `web_search`, `web_fetch` (Brave API + page fetch with SSRF protection) | Yes | No |
+| Scheduler | `create_scheduled_job`, `list_scheduled_jobs`, `delete_scheduled_job` | No | No |
+| Skillsmith | `create_skill`, `list_user_skills`, `delete_skill` | No | `create_skill` only |
+| Python | `run_python` | Yes | Yes |
+| Web Search | `web_search`, `web_fetch` (Brave API + SSRF-protected page fetch) | Yes | No |
 | Google Drive | `gdrive_list_files`, `gdrive_create_file` | Yes | Yes |
 | Email (Gmail) | `email_list_inbox`, `email_read`, `email_create_draft` | Yes | Yes |
 
-## Prerequisites
-
-- Python 3.10+
-- Docker (for sandboxed skills)
-- [Ollama](https://ollama.com) installed and running (`ollama serve`)
-- A Telegram bot token (from [@BotFather](https://t.me/BotFather))
+**User-created tools** (via Skillsmith) are also sandboxed and require approval. After clicking "Approve & Trust", a user tool runs without future prompts.
 
 ## Setup
 
-### 1. Clone and install
+### 1. Install
 
 ```bash
 git clone <repo-url> senti
@@ -73,13 +87,13 @@ cd senti
 pip install -e ".[dev]"
 ```
 
-### 2. Configure environment
+### 2. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your values:
+Edit `.env`:
 
 ```env
 # Required
@@ -89,148 +103,84 @@ ALLOWED_TELEGRAM_USER_IDS=123456789
 # LLM — default Ollama, add API keys for cloud providers
 OLLAMA_HOST=http://localhost:11434
 LLM_MODEL=ollama_chat/llama3
+
+# Cloud providers (optional — only needed for the ones you use)
 OPENAI_API_KEY=
 GEMINI_API_KEY=
 ANTHROPIC_API_KEY=
 
-# Optional: Brave Search (for web_search / web_fetch tools)
-BRAVE_API_KEY=your-brave-api-key
+# Brave Search (optional)
+BRAVE_API_KEY=
 
-# Optional: Google Drive (OAuth2)
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-GOOGLE_REFRESH_TOKEN=...
+# Google Drive (optional, OAuth2)
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REFRESH_TOKEN=
 
-# Optional: Gmail (OAuth2 — scopes: gmail.readonly + gmail.compose)
+# Gmail (optional, OAuth2 — scopes: gmail.readonly + gmail.compose)
 GMAIL_REFRESH_TOKEN=
 GMAIL_LABEL=Senti
 ```
 
-Cloud provider API keys are only needed for the providers you want to use. You can switch between models at runtime with the `/model` command — see [Model Switching](#model-switching) below.
+### 3. LLM setup
 
-### 3. Install and start Ollama (for local models)
-
-If you want to use local models, Senti expects a running Ollama instance — it does **not** manage Ollama for you. Install Ollama from [ollama.com](https://ollama.com), then:
+**Local (Ollama):** Install from [ollama.com](https://ollama.com), then:
 
 ```bash
-ollama serve          # start the server (if not already running)
+ollama serve          # start the server
 ollama pull llama3    # pull the model set in LLM_MODEL
 ```
 
-Senti checks Ollama reachability on startup. If it can't connect you'll see:
+**Cloud-only:** If you only use cloud providers, change the default model in `config/models.yaml` and Ollama is not required.
 
-```
-ERROR: Ollama is not reachable at http://localhost:11434.
-Please install Ollama (https://ollama.com) and start it with 'ollama serve'.
-```
-
-Set `OLLAMA_HOST` in `.env` if Ollama runs on a different address.
-
-> **Note:** If you only use cloud providers (OpenAI, Gemini, Anthropic) and change the default model in `config/models.yaml` accordingly, Ollama is not required.
-
-### 4. Build sandbox images (if using sandboxed skills)
+### 4. Build sandbox images
 
 ```bash
 make sandbox-build
 ```
 
+This builds Docker images for web search, Google Drive, Gmail, and Python execution.
+
 ### 5. Run
 
 ```bash
-# Direct
-python -m senti
-
-# Or via Make
-make run
-
-# Or via Docker Compose
-make docker-up
+python -m senti       # direct
+make run              # via Make
+make docker-up        # via Docker Compose
 ```
 
-## After Starting
-
-Once Senti is running (via `make run`, `python -m senti`, or `make docker-up`) you interact with it entirely through Telegram.
+## Usage
 
 ### Verify it's working
 
-1. Open Telegram and find your bot (the one whose token you put in `.env`).
-2. Send `/start`. You should get a greeting back.
-3. Send `/status` to confirm the model and skills are loaded:
-   ```
-   Model: llama3 (ollama_chat/llama3)
-   Memory: active
-   Skills: 10 loaded
-   Scheduler: active
-   ```
-4. Send a plain message like "Hello, what can you do?" — the bot should reply via the LLM.
+1. Open Telegram and find your bot.
+2. Send `/start` — you should get a greeting.
+3. Send `/status` to confirm skills are loaded.
+4. Send a message like "Hello, what can you do?"
 
-If the bot doesn't respond, check the logs:
-
-```bash
-# Direct run — logs print to the console
-
-# Docker Compose
-docker compose logs -f senti
-```
-
-Common issues:
-- **Bot not responding at all** — verify `TELEGRAM_BOT_TOKEN` is correct and the bot is not running elsewhere (only one process can poll a bot token).
-- **"Ollama is not reachable"** — Ollama isn't running. Start it with `ollama serve`.
-- **Messages ignored, no error** — your Telegram user ID is not in `ALLOWED_TELEGRAM_USER_IDS`. Send a message to [@userinfobot](https://t.me/userinfobot) to find your ID.
-
-### Try the tools
-
-Ask Senti to use its skills in natural language:
+### Examples
 
 ```
 You: Remember that my birthday is March 15th.
-Senti: ✓ Saved: birthday = March 15th
-
-You: When is my birthday?
-Senti: Your birthday is March 15th.
+Senti: Saved to memory under "preference".
 
 You: What time is it?
-Senti: It is 2026-02-08 14:32:07 UTC (Saturday).
+Senti: It is 2026-02-11 14:32 UTC.
 
 You: Search for the latest news about AI agents.
-Senti: (runs web_search in a sandbox container, returns results)
+Senti: (runs web_search → web_fetch in sandbox, returns summary)
+
+You: Calculate the first 20 fibonacci numbers.
+Senti: (requests approval → runs run_python in sandbox → returns output)
+
+You: Create a tool that converts celsius to fahrenheit.
+Senti: (requests approval → creates skill → registered for future use)
+
+You: Convert 100 celsius.
+Senti: (runs user skill → Approve / Deny / Approve & Trust)
 ```
 
-For skills that require approval (Google Drive, Email), Senti will show an inline keyboard:
-
-```
-Senti: ⚠️ Approval required for: gdrive_create_file
-       Arguments: {"name": "notes.txt", "content": "..."}
-       [Approve] [Deny]
-```
-
-The tool only executes after you tap **Approve**. If you don't respond within 120 seconds, it times out.
-
-### Manage the bot
-
-Use commands to control Senti's state:
-
-```
-/model    — list available models or switch: /model <name>
-/reset    — clear your conversation history (start fresh)
-/facts    — list everything Senti remembers about you
-/status   — check model, skills, and scheduler state
-/jobs     — see scheduled jobs and their next run time
-/pause    — pause the scheduler (stops autonomous jobs)
-/resume   — resume the scheduler
-/kill     — emergency stop: clears memory, pauses all jobs
-```
-
-### Persistent data
-
-All runtime data is stored in `data/` (gitignored):
-
-- `data/senti.db` — SQLite database (conversations, facts, audit log)
-- `data/logs/senti.log` — rotating JSON log file
-
-To start completely fresh, run `make clean` or delete the `data/` directory.
-
-## Telegram Commands
+### Telegram Commands
 
 | Command | Description |
 |---------|-------------|
@@ -238,199 +188,131 @@ To start completely fresh, run `make clean` or delete the `data/` directory.
 | `/help` | List available commands |
 | `/model` | List models, or `/model <name>` to switch |
 | `/reset` | Clear conversation history |
-| `/facts` | List all stored facts |
-| `/status` | Show system status (model, skills, scheduler) |
+| `/undo` | Remove last conversation turn |
+| `/memories` | List stored memories |
+| `/usage` | Token usage statistics |
+| `/status` | System status (model, skills, scheduler) |
 | `/jobs` | List scheduled jobs |
 | `/pause` | Pause the scheduler |
 | `/resume` | Resume the scheduler |
 | `/kill` | Emergency stop: clears memory, pauses all jobs |
 
+### Approval flow
+
+Tools marked as requiring approval show an inline keyboard before executing:
+
+```
+Approval required: run_python
+
+print("Hello, world!")
+
+[Approve] [Deny]
+```
+
+User-created tools show a third button — **Approve & Trust** — which skips approval on future invocations of that tool.
+
 ## Model Switching
 
-Senti supports multiple LLM providers. Models are predefined in `config/models.yaml`:
-
-```yaml
-default: llama3
-
-models:
-  llama3:
-    model: ollama_chat/llama3
-    provider: ollama
-    description: "Llama 3 (local, via Ollama)"
-
-  gpt-4o-mini:
-    model: gpt-4o-mini
-    provider: openai
-    description: "OpenAI GPT-4o Mini"
-
-  gemini-flash:
-    model: gemini/gemini-2.0-flash
-    provider: gemini
-    description: "Google Gemini 2.0 Flash"
-
-  claude-sonnet:
-    model: claude-sonnet-4-5-20250929
-    provider: anthropic
-    description: "Anthropic Claude Sonnet 4.5"
-```
-
-Switch models at runtime in Telegram:
+Models are defined in `config/models.yaml`. Switch at runtime:
 
 ```
-/model                  — list all available models (active model marked)
+/model                  — list all available models
 /model gpt-4o-mini      — switch to GPT-4o Mini
-/model gemini-flash     — switch to Gemini 2.0 Flash
+/model gemini-flash     — switch to Gemini Flash
 /model llama3           — switch back to local Ollama
 ```
 
-The `model` field uses [LiteLLM format](https://docs.litellm.ai/docs/providers). Add API keys for cloud providers in `.env`:
+The `model` field uses [LiteLLM format](https://docs.litellm.ai/docs/providers). To add a model, add an entry to `config/models.yaml` — no code changes needed.
 
 | Provider | Env variable | Model prefix |
 |----------|-------------|--------------|
 | Ollama | (none, uses `OLLAMA_HOST`) | `ollama_chat/` |
-| OpenAI | `OPENAI_API_KEY` | (native model names) |
+| OpenAI | `OPENAI_API_KEY` | (native names) |
 | Gemini | `GEMINI_API_KEY` | `gemini/` |
-| Anthropic | `ANTHROPIC_API_KEY` | (native model names) |
-
-To add a new model, add an entry to `config/models.yaml` — no code changes needed.
+| Anthropic | `ANTHROPIC_API_KEY` | (native names) |
 
 ## Gmail Setup
 
 Senti uses Gmail OAuth2 with minimal scopes (`gmail.readonly` + `gmail.compose`). It can only read emails in a designated label and create drafts — it never sends email.
 
-### 1. Create OAuth credentials
-
-1. Go to [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials)
-2. Create an **OAuth 2.0 Client ID** (type: Desktop app)
-3. Add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to your `.env`
-
-### 2. Obtain a refresh token
-
-```bash
-python scripts/gmail_oauth.py
-```
-
-This opens your browser for Google sign-in, requests the two limited scopes, and prints the refresh token. Add it to `.env`:
-
-```env
-GMAIL_REFRESH_TOKEN=your-refresh-token-here
-```
-
-### 3. Create the Gmail label
-
-Create a label named `Senti` (or whatever you set `GMAIL_LABEL` to) in Gmail. Senti can only read emails with this label and will only create drafts — never send.
+1. Create OAuth credentials at [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials) (Desktop app type)
+2. Run `python scripts/gmail_oauth.py` to get a refresh token
+3. Create a Gmail label matching `GMAIL_LABEL` (default: "Senti")
+4. Add credentials to `.env`
 
 ## Configuration
 
-### `config/personality.md`
-
-System prompt that defines Senti's behavior and personality. Edit this to customize how the assistant responds.
-
-### `config/models.yaml`
-
-Predefined LLM models for runtime switching. See [Model Switching](#model-switching) above.
-
-### `config/skills.yaml`
-
-Declares all skills with their module paths, sandbox settings, and approval flags. To add a new skill:
-
-```yaml
-skills:
-  my_skill:
-    description: "What the skill does"
-    module: "senti.skills.builtin.my_skill"
-    class_name: "MySkill"
-    sandboxed: false
-    requires_approval: false
-```
-
-### `config/redaction_patterns.yaml`
-
-Regex patterns for scrubbing sensitive data (emails, phone numbers, API keys, etc.) from all text flowing through the system.
-
-### `config/schedules.yaml`
-
-Cron-based scheduled jobs. Currently supports `self_reflect` which sends a synthetic message through the orchestrator on a schedule.
+| File | Purpose |
+|------|---------|
+| `config/personality.md` | System prompt — personality, behavior, tool usage instructions |
+| `config/models.yaml` | LLM model definitions for runtime switching |
+| `config/skills.yaml` | Skill registry — modules, sandbox settings, approval flags |
+| `config/redaction_patterns.yaml` | Regex patterns for scrubbing sensitive data |
+| `config/schedules.yaml` | Cron-based scheduled jobs |
 
 ## Project Structure
 
 ```
 senti/
-├── config/              # Personality, skills, redaction, schedules
+├── config/              # Personality, skills, models, redaction, schedules
 ├── src/senti/
-│   ├── gateway/         # Telegram bot, filters, HITL approval
+│   ├── gateway/         # Telegram bot, handlers, filters, HITL approval
 │   ├── controller/      # Orchestrator, LLM client, tool router, redaction
-│   ├── memory/          # SQLite database, conversation buffer, fact store
-│   ├── sandbox/         # Docker container executor, network policies
-│   ├── skills/          # Base class, registry, built-in skills
-│   ├── scheduler/       # APScheduler engine, job definitions
+│   ├── memory/          # SQLite database, conversation buffer, memory store
+│   ├── sandbox/         # Docker container executor
+│   ├── skills/          # Base class, registry, user skill store, built-in skills
+│   ├── scheduler/       # APScheduler engine, job store, job definitions
 │   └── security/        # Content sanitizer, audit logging
 ├── sandbox_images/      # Dockerfiles for sandboxed skill containers
+│   ├── search/          # Web search + fetch
+│   ├── gdrive/          # Google Drive operations
+│   ├── email_proxy/     # Gmail operations
+│   └── python_runner/   # Python code execution + user skill runtime
 ├── tests/
-└── data/                # Runtime: senti.db, logs/ (gitignored)
+└── data/                # Runtime: senti.db, logs/, memories/ (gitignored)
 ```
 
-## Security Design
+## Security
 
-**Sandbox isolation:** Sandboxed skills run in Docker containers with:
-- `read_only` filesystem
-- `cap_drop=ALL` (no Linux capabilities)
-- `no-new-privileges` security option
-- `mem_limit=128m`, `cpu_quota=50%`
-- `user=nobody`
+**Sandbox isolation:** All sandboxed skills run in Docker containers with:
+- `read_only` filesystem, `cap_drop=ALL`, `no-new-privileges`
+- `mem_limit=128m`, `cpu_quota=50%`, `user=nobody`
 - `network_mode=none` by default (allowlisted per-skill)
 - `/tmp` as noexec tmpfs
+- Environment wiped before executing user code (python_runner)
 
-**Docker-out-of-Docker (DooD):** The host Docker socket is mounted into the Senti container. Sandbox containers are siblings, not nested. This avoids privileged DinD mode.
+**No secrets leak to user code:** The python sandbox receives no API keys. Environment variables are cleared before `exec()`.
 
-**Sandbox protocol:** JSON in via `SENTI_INPUT` env var → `run.py` → JSON out on stdout. API keys passed as separate env vars. Simple, testable, language-agnostic.
+**HITL:** Sensitive tool calls require explicit user approval via Telegram inline keyboard. User-created tools can be individually trusted after review.
 
-**Redaction at 3 points:** Inbound user messages, tool results, and outbound LLM responses. Automatically detects literal `.env` secret values in addition to regex patterns.
+**Redaction:** Secrets scrubbed at 3 points — inbound, tool results, outbound — using regex patterns and literal `.env` value detection.
 
-**HITL via asyncio.Future:** Tool execution awaits a Future that resolves when the user clicks Approve/Deny on the Telegram inline keyboard. 120-second timeout.
+**Docker-out-of-Docker (DooD):** Sandbox containers run as siblings via the host Docker socket, avoiding privileged DinD mode.
 
 ## Development
 
 ```bash
-# Install with dev dependencies
-make dev
-
-# Run tests
-make test
-
-# Lint
-make lint
-
-# Auto-format
-make format
-
-# Clean runtime data
-make clean
+make dev              # install with dev dependencies
+make test             # run tests
+make lint             # ruff check
+make format           # ruff auto-format
+make clean            # remove runtime data
 ```
 
-### Adding a New Skill
+### Adding a built-in skill
 
 1. Create `src/senti/skills/builtin/my_skill.py` extending `BaseSkill`
 2. Implement `name`, `get_tool_definitions()`, and `execute()`
 3. Add an entry to `config/skills.yaml`
-4. If sandboxed, create `sandbox_images/my_skill/run.py` and `Dockerfile`
+4. If sandboxed, create `sandbox_images/my_skill/run.py` + `Dockerfile`
 
-### Running with Docker Compose
+### Docker Compose
 
-Ollama must already be running on the host — `docker compose` does **not** start it.
+Ollama must already be running on the host.
 
 ```bash
-# Build everything
-make docker-build
-make sandbox-build
-
-# Start Senti (connects to host Ollama via host networking)
-make docker-up
-
-# Stop
-make docker-down
-```
-### Observing logs
-```bash
-docker compose logs -f senti
+make docker-build && make sandbox-build
+make docker-up        # start
+make docker-down      # stop
+docker compose logs -f senti  # view logs
 ```
