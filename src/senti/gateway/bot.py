@@ -24,7 +24,12 @@ def build_bot(
     hitl: HITLManager | None = None,
 ):
     """Build and configure the Telegram bot application."""
-    app = ApplicationBuilder().token(settings.telegram_bot_token).build()
+    app = (
+        ApplicationBuilder()
+        .token(settings.telegram_bot_token)
+        .concurrent_updates(True)
+        .build()
+    )
 
     user_filter = AllowedUserFilter(settings.allowed_telegram_user_ids)
     h = make_handlers(orchestrator)

@@ -144,7 +144,10 @@ class HITLManager:
     ) -> None:
         """Handle inline keyboard button presses."""
         query = update.callback_query
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception:
+            logger.debug("Failed to answer callback query (may be stale)")
 
         data = query.data or ""
         if ":" not in data:
